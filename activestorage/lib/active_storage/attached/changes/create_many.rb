@@ -5,8 +5,15 @@ module ActiveStorage
     attr_reader :name, :attachables, :pending_uploads
     attr_accessor :record
 
-    def initialize(name, record, attachables, pending_uploads: [])
+    # When false, +save+ appends the new attachments to the association
+    # instead of reassigning (and thereby replacing) the whole collection.
+    def replace?
+      @replace
+    end
+
+    def initialize(name, record, attachables, pending_uploads: [], replace: true)
       @name, @record, @attachables = name, record, Array(attachables)
+      @replace = replace
       blobs.each(&:identify_without_saving)
       @pending_uploads = Array(pending_uploads) + subchanges_without_blobs
       attachments
@@ -29,7 +36,11 @@ module ActiveStorage
     end
 
     def save
-      assign_associated_attachments
+      if @replace
+        assign_associated_attachments
+      else
+        append_associated_attachments
+      end
       reset_associated_blobs
     end
 
@@ -48,6 +59,17 @@ module ActiveStorage
 
       def assign_associated_attachments
         record.public_send("#{name}_attachments=", persisted_or_new_attachments)
+      end
+
+      # Appends the new attachments to the existing association without
+      # replacing it. Used by +Attached::Many#attach+ so that concurrent
+      # attaches to the same record don't overwrite each other (a record that
+      # is reassigned the whole collection would drop attachments another
+      # process added in between). Only the not-yet-persisted attachments are
+      # inserted; blobs already attached are skipped.
+      def append_associated_attachments
+        new_attachments = attachments.select(&:new_record?)
+        record.public_send("#{name}_attachments").concat(new_attachments) if new_attachments.any?
       end
 
       def reset_associated_blobs

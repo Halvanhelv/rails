@@ -209,6 +209,46 @@ class ActiveStorage::ManyAttachedTest < ActiveSupport::TestCase
     assert ActiveStorage::Blob.service.exist?(@user.highlights.second.key)
   end
 
+  test "attaching to an existing record appends instead of replacing the collection" do
+    # Two references to the same record, each of which read the (empty)
+    # collection before the other attached -- the deterministic equivalent of
+    # two concurrent requests attaching in parallel. Reassigning the whole
+    # collection on save would make the second attach drop the first one's
+    # attachment (lost update); appending keeps both. Uses Group because it has
+    # no optimistic locking, which would otherwise raise on the stale write.
+    group  = Group.create!
+    first  = create_blob(filename: "first.jpg")
+    second = create_blob(filename: "second.jpg")
+
+    one = Group.find(group.id)
+    two = Group.find(group.id)
+    one.photos.blobs.load
+    two.photos.blobs.load
+
+    one.photos.attach first
+    two.photos.attach second
+
+    assert_equal %w[ first.jpg second.jpg ],
+      group.reload.photos.map { |attachment| attachment.filename.to_s }.sort
+  end
+
+  test "attaching to an existing record keeps the already-attached blobs and reflects both in memory" do
+    # Appending must leave the previously attached blob in place and surface the
+    # whole collection on the same record without a reload -- the change appends
+    # to the association and only resets the blobs reader, so a stale in-memory
+    # collection (showing just the new attachment) would be a regression.
+    group = Group.create!
+    group.photos.attach create_blob(filename: "existing.jpg")
+
+    record = Group.find(group.id)
+    record.photos.attach create_blob(filename: "added.jpg")
+
+    assert_equal %w[ added.jpg existing.jpg ],
+      record.photos.map { |attachment| attachment.filename.to_s }.sort
+    assert_equal %w[ added.jpg existing.jpg ],
+      group.reload.photos.map { |attachment| attachment.filename.to_s }.sort
+  end
+
   test "attaching existing blobs to an existing record one at a time" do
     @user.highlights.attach create_blob(filename: "funky.jpg")
     @user.highlights.attach create_blob(filename: "town.jpg")

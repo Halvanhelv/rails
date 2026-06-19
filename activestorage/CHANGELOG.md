@@ -1,3 +1,15 @@
+*   Fix `has_many_attached` `attach` dropping concurrently attached blobs.
+
+    Attaching to a persisted record reassigned the whole collection ("current
+    blobs + the new ones"), so two requests attaching in parallel each
+    overwrote the other's attachment (lost update) or raced into uniqueness and
+    foreign key violations. `attach` now appends the new attachments without
+    touching the ones added in between.
+
+    Fixes #55395.
+
+    *Islam Gagiev*
+
 *   Fix `MirrorService#mirror` losing blob metadata when copying to mirrors.
 
     Mirrored copies on S3, Azure, and GCS were served as `application/octet-stream`

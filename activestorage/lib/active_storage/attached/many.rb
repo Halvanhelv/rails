@@ -49,10 +49,26 @@ module ActiveStorage
     #   document.images.attach(io: File.open("/path/to/racecar.jpg"), filename: "racecar.jpg", content_type: "image/jpeg")
     #   document.images.attach([ first_blob, second_blob ])
     def attach(*attachables)
-      record.public_send("#{name}=", blobs + attachables.flatten)
-      if record.persisted? && !record.changed?
-        return if !record.save
+      blobs_to_attach = blobs + attachables.flatten
+      immediate = record.persisted? && !record.changed?
+
+      if immediate && appendable_change?
+        # Append the new attachments instead of reassigning the whole
+        # collection. Reassigning saves "current blobs + mine", so two
+        # processes attaching in parallel each overwrite the other's
+        # attachment (lost update) or race into uniqueness/foreign key
+        # violations. Appending only inserts the new rows and leaves
+        # concurrently-added attachments intact. The change still carries the
+        # full set of blobs so repeated attaches before commit accumulate, and
+        # the pending uploads are forwarded so the files still get uploaded.
+        pending_uploads = record.attachment_changes[name].try(:pending_uploads)
+        record.attachment_changes[name] =
+          ActiveStorage::Attached::Changes::CreateMany.new(name, record, blobs_to_attach, pending_uploads: pending_uploads, replace: false)
+      else
+        record.public_send("#{name}=", blobs_to_attach)
       end
+
+      return if immediate && !record.save
       record.public_send("#{name}")
     end
 
@@ -89,6 +105,16 @@ module ActiveStorage
     end
 
     private
+      # An immediate attach appends (rather than reassigning the whole
+      # collection) unless there's a pending change that intends to replace it:
+      # an assignment via +name=+ builds a replacing change, while a previous
+      # +attach+ already appends. The caller pairs this with the immediate-save
+      # check (persisted and unchanged) that gates appending in the first place.
+      def appendable_change?
+        pending = record.attachment_changes[name]
+        pending.nil? || (pending.is_a?(Attached::Changes::CreateMany) && !pending.replace?)
+      end
+
       def purge_many
         Attached::Changes::PurgeMany.new(name, record, attachments)
       end
